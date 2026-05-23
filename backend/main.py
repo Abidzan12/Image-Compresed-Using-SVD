@@ -1,6 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import numpy as np
 from PIL import Image
 import io
@@ -15,6 +17,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Thread pool untuk menjalankan komputasi SVD tanpa memblokir server
+executor = ThreadPoolExecutor(max_workers=4)
+
+# Batas resolusi maksimum agar SVD tidak terlalu lama
+MAX_DIMENSION = 1024  # piksel
+
+
+def resize_if_needed(image: Image.Image) -> Image.Image:
+    """Resize gambar jika dimensinya melebihi MAX_DIMENSION, menjaga aspek rasio."""
+    w, h = image.size
+    if w <= MAX_DIMENSION and h <= MAX_DIMENSION:
+        return image
+    ratio = min(MAX_DIMENSION / w, MAX_DIMENSION / h)
+    new_w = int(w * ratio)
+    new_h = int(h * ratio)
+    return image.resize((new_w, new_h), Image.LANCZOS)
 
 
 def compress_channel(channel: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -46,23 +65,22 @@ def compute_metrics(original: np.ndarray, compressed: np.ndarray, singular_value
     }
 
 
-@app.post("/compress")
-async def compress_image(file: UploadFile = File(...), k: int = Form(...)):
-    contents = await file.read()
+def run_svd_compression(contents: bytes, k: int) -> dict:
+    """Seluruh komputasi SVD dijalankan di thread terpisah agar tidak memblokir server."""
     original_size_kb = round(len(contents) / 1024, 2)
 
-    try:
-        raw_image = Image.open(io.BytesIO(contents))
-        # Convert semua format (RGBA, grayscale, palette, dll) ke RGB
-        if raw_image.mode in ("RGBA", "LA"):
-            # Flatten alpha channel ke background putih agar tidak hilang datanya
-            background = Image.new("RGB", raw_image.size, (255, 255, 255))
-            background.paste(raw_image, mask=raw_image.split()[-1])
-            image = background
-        else:
-            image = raw_image.convert("RGB")
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"detail": f"Gagal membuka gambar: {str(e)}"})
+    raw_image = Image.open(io.BytesIO(contents))
+
+    # Konversi mode warna ke RGB
+    if raw_image.mode in ("RGBA", "LA"):
+        background = Image.new("RGB", raw_image.size, (255, 255, 255))
+        background.paste(raw_image, mask=raw_image.split()[-1])
+        image = background
+    else:
+        image = raw_image.convert("RGB")
+
+    # Resize jika gambar terlalu besar
+    image = resize_if_needed(image)
 
     original_array = np.array(image, dtype=np.float64)
     M, N = original_array.shape[:2]
@@ -72,7 +90,6 @@ async def compress_image(file: UploadFile = File(...), k: int = Form(...)):
 
     k_clamped = min(k, min(M, N))
     svd_size_kb = round((k_clamped * (M + N + 1) * NUM_CHANNELS) / 1024, 2)
-
     max_effective_k = int((M * N) / (M + N + 1))
 
     channels = [original_array[:, :, i] for i in range(NUM_CHANNELS)]
@@ -92,16 +109,12 @@ async def compress_image(file: UploadFile = File(...), k: int = Form(...)):
     compressed_image.save(buffer, format="JPEG", quality=85)
     compressed_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    # Ukuran JPEG hasil kompresi yang sebenarnya (bukan formula teoritis)
     actual_compressed_size_kb = round(len(buffer.getvalue()) / 1024, 2)
-
-    # Rasio kompresi: ukuran file asli / ukuran output JPEG nyata
     compression_ratio = round(original_size_kb / actual_compressed_size_kb, 2) if actual_compressed_size_kb > 0 else 1.0
 
-    # svd_size_kb tetap dikirim untuk keperluan referensi edukasi
     metrics = compute_metrics(original_array, compressed_array.astype(np.float64), singular_values_list)
 
-    return JSONResponse(content={
+    return {
         "compressed_image": compressed_b64,
         "original_size_kb": original_size_kb,
         "raw_size_kb": raw_size_kb,
@@ -111,4 +124,18 @@ async def compress_image(file: UploadFile = File(...), k: int = Form(...)):
         "max_effective_k": max_effective_k,
         "image_dimensions": {"width": N, "height": M},
         "metrics": metrics,
-    })
+    }
+
+
+@app.post("/compress")
+async def compress_image(file: UploadFile = File(...), k: int = Form(...)):
+    contents = await file.read()
+
+    try:
+        # Jalankan komputasi berat di thread pool (non-blocking)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, run_svd_compression, contents, k)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Gagal memproses gambar: {str(e)}"})
+
+    return JSONResponse(content=result)
