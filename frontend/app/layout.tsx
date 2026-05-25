@@ -1,12 +1,24 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "SVD Image Compressor — Matrix Decomposition",
-  description: "Compress images using Singular Value Decomposition (SVD). Analyze singular values, scree plots, and cumulative energy interactively.",
+  title: "SVD Image Compressor — Singular Value Decomposition",
+  description:
+    "Kompres gambar menggunakan dekomposisi matriks Singular Value Decomposition (SVD). Analisis singular values, scree plots, dan energi kumulatif secara interaktif.",
+  keywords: ["SVD", "image compression", "singular value decomposition", "matrix decomposition"],
 };
 
 export default function RootLayout({
@@ -16,10 +28,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="id" className="dark">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-      </head>
-      <body className={inter.variable}>{children}</body>
+      <body className={`${inter.variable} ${jetbrainsMono.variable}`}>
+        {children}
+      </body>
     </html>
   );
 }
