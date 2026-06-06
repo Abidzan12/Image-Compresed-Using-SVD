@@ -46,14 +46,14 @@ def compress_channel(channel: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarra
 def compute_metrics(original: np.ndarray, compressed: np.ndarray, singular_values_list: list) -> dict:
     mse = float(np.mean((original.astype(np.float64) - compressed.astype(np.float64)) ** 2))
 
-    all_singular = np.concatenate(singular_values_list)
-    total_energy = np.sum(all_singular)
+    # Energi total didefinisikan sebagai jumlah kuadrat dari seluruh nilai singular (Frobenius norm kuadrat)
+    total_energy = sum(np.sum(sv ** 2) for sv in singular_values_list)
 
     k = min(len(singular_values_list[0]), 200)
     cumulative_energies = []
     for i in range(1, k + 1):
-        partial = sum(np.sum(sv[:i]) for sv in singular_values_list)
-        cumulative_energies.append(float(partial / (total_energy * len(singular_values_list)) * 100))
+        partial = sum(np.sum(sv[:i] ** 2) for sv in singular_values_list)
+        cumulative_energies.append(float((partial / total_energy) * 100) if total_energy > 0 else 0.0)
 
     representative_sv = singular_values_list[0]
     scree_data = [float(np.log10(v)) if v > 0 else 0.0 for v in representative_sv[:200]]
@@ -63,6 +63,7 @@ def compute_metrics(original: np.ndarray, compressed: np.ndarray, singular_value
         "cumulative_energy": cumulative_energies,
         "scree_plot": scree_data,
     }
+
 
 
 def run_svd_compression(contents: bytes, k: int) -> dict:
